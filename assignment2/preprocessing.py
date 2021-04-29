@@ -71,7 +71,12 @@ class preprocessing:
         df = pd.DataFrame(tweet[:-1], columns=['tweet'])
         df['label'] = sentiments
         return df
-
+    '''
+    In this part, text files are read from github, converted to pandsas dataframe and then processing is done to get rid
+     of noise in the data. All the special characters are removed, words are lower-cased, 
+     all the words whose length is less than 2 are filtered, getting rid of 'user' from texts and 
+     calcualting the length of each tweet and storing it in dataframe.
+    '''
 
     def preprocess(self,df):
         ignore_words = ['user', 'st']

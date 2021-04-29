@@ -1,26 +1,39 @@
+# Importing necessities
 import numpy as np
+import pandas as pd
 import random
 
 from tqdm.notebook import tqdm
 
-
-from transformers import AdamW,get_linear_schedule_with_warmup
+from transformers import AdamW, get_linear_schedule_with_warmup
 
 from sklearn.metrics import f1_score
 
 import torch
 from torch.utils.data import TensorDataset
-from torch.utils.data import RandomSampler,SequentialSampler,DataLoader
+from torch.utils.data import RandomSampler, DataLoader
 from transformers import RobertaTokenizer, RobertaForSequenceClassification
 
 import warnings
+
 warnings.filterwarnings('ignore')
 
+'''
+ For the purposes of fine-tuning, the authors recommend choosing from the following values:
+ Batch size: 16, 32 (We chose 32 when creating our DataLoaders).
+ Learning rate (Adam): 5e-5, 3e-5, 2e-5 (We’ll use 2e-5).
+ Number of epochs: 2, 3, 4 (We’ll use 4).
+'''
+
+
+'''Class for the task Offensive Language classification'''
 class offensive:
     def __init__(self):
         pass
 
-    def initialize_bert(self, num_of_class):
+    '''Initializing pretrained model of RobertaForSequenceClassification & RobertaTokenizer'''
+
+    def initialize_roberta(self, num_of_class):
         model = RobertaForSequenceClassification.from_pretrained('roberta-base',
                                                                  num_labels=num_of_class,
                                                                  output_attentions=False,
@@ -28,6 +41,8 @@ class offensive:
 
         tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
         return model, tokenizer
+
+    '''Wrapper to perform encoding of data, this is called for train, validation and test dataset'''
 
     def encode_data(self, tokenizer, df, max_sequence_length=256):
         encoder = tokenizer.batch_encode_plus(df.tweet.values,
@@ -40,14 +55,20 @@ class offensive:
 
         return encoder
 
+    '''Wrapper to Extract 'input_ids' and 'attention_mask' after encoding.'''
+
     def extract_inputId_attentionMask(self, df, encoder):
         input_ids = encoder['input_ids']
         attention_masks = encoder["attention_mask"]
         labels = torch.tensor(df.label.values)
         return input_ids, attention_masks, labels
 
+    ''' Wrappet that returns TensorDataset, created with input_ids, attenstion_masks and labels '''
+
     def get_tesnsor_dataset(self, input_ids, attention_masks, labels):
         return TensorDataset(input_ids, attention_masks, labels)
+
+    '''Creating DataLoader object for all the datasets'''
 
     def dataloader_object(self, data, batch_size=16):
         dataloader = DataLoader(
@@ -56,11 +77,7 @@ class offensive:
             batch_size=batch_size)
         return dataloader
 
-    def freeze_bert_layers(self, model):
-        for param in model.bert.parameters():
-            param.requires_grad = False
-
-    # Get all of the model's parameters as a list of tuples.
+    '''Print model architecture'''
 
     def print_model_params(self, model):
         params = list(model.named_parameters())
@@ -75,10 +92,19 @@ class offensive:
         for p in params[-4:]:
             print("{:<55} {:>12}".format(p[0], str(tuple(p[1].size()))))
 
-    # For the purposes of fine-tuning, the authors recommend choosing from the following values:
-    # Batch size: 16, 32 (We chose 32 when creating our DataLoaders).
-    # Learning rate (Adam): 5e-5, 3e-5, 2e-5 (We’ll use 2e-5).
-    # Number of epochs: 2, 3, 4 (We’ll use 4).
+    '''Wrapper to calculate maximum length of sentences'''
+
+    def calc_max_len(self, tokenizer, df_train, df_test):
+        # Concatenate
+        processed_tweets = np.concatenate([df_train.processed_tweets.values, df_test.processed_tweets.values])
+        # Encode
+        encoded_tweets = [tokenizer.encode(sentence, add_special_tokens=True) for sentence in processed_tweets]
+        # get max_len
+        max_len = max([len(sentence) for sentence in encoded_tweets])
+        print('Max length: ', max_len)
+        return max_len
+
+    ''' Wrapper to initialize optimizer and scheduler '''
 
     def initialize_optimizer(self, model, dataloader, lr=1e-5, epochs=2):
         optimizer = AdamW(model.parameters(), lr, eps=1e-8)
@@ -90,17 +116,22 @@ class offensive:
         )
         return optimizer, scheduler
 
+    ''' Calculating Macro F1 score '''
+
     def f1_score_func(self, predictions, y_labelled):
         preds_flatten = np.argmax(predictions, axis=1).flatten()
         labels_flatten = y_labelled.flatten()
         return f1_score(labels_flatten, preds_flatten, average='macro')
 
+    ''' Loading model to GPU '''
 
     def load_model_to_device(self, model):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model.to(device)
         print(f"Loading:{device}")
         return device
+
+    ''' Evaluation of model after every epoch on validation data set and on test dataset after training is completed'''
 
     def evaluate(self, model, device, dataloader_val):
         model.eval()
@@ -132,6 +163,8 @@ class offensive:
         predictions = np.concatenate(predictions, axis=0)
         true_vals = np.concatenate(true_vals, axis=0)
         return loss_val_avg, predictions, true_vals
+
+    ''' Wrapper API to commence training and perform validation after every epoch '''
 
     def init_training(self, model, optimizer, scheduler, epochs, device, dataloader_train, dataloader_val):
         for epoch in tqdm(range(1, epochs + 1)):
@@ -169,39 +202,46 @@ class offensive:
 
             loss_train_avg = loss_train_total / len(dataloader_train)
             tqdm.write(f'Training Loss: {loss_train_avg}')
-            val_loss,predictions,true_vals = evaluate(model,device, dataloader_val)
+            val_loss, predictions, true_vals = self.evaluate(model, device, dataloader_val)
 
-            test_score = f1_score_func(predictions,true_vals)
+            test_score = self.f1_score_func(predictions, true_vals)
 
             tqdm.write(f'Val Loss:{val_loss}\n Test Score:{test_score}')
 
+    ''' Wrapper to perform evaluation'''
 
     def evaluate_wrapper(self, model, device, dataloader_test):
-        val_loss, predictions, true_vals = evaluate(model, device, dataloader_test)
+        val_loss, predictions, true_vals = self.evaluate(model, device, dataloader_test)
 
-        test_score = f1_score_func(predictions, true_vals)
+        test_score = self.f1_score_func(predictions, true_vals)
 
         tqdm.write(f'Val Loss:{val_loss}\n Test Score:{test_score}')
 
-    def fineTune_bert(self, batch_size, lr, epochs, max_length, prep_data, _):
+    '''All the APIs needed for fine tuning ROBERTA model is called from this wrapper'''
 
+    def fineTune(self, batch_size, lr, epochs, prep_data, _):
         num_of_class = len(prep_data.train_df.label.unique())
-
         seed_val = 17
         random.seed(seed_val)
         np.random.seed(seed_val)
         torch.manual_seed(seed_val)
         torch.cuda.manual_seed_all(seed_val)
 
-        model, tokenizer = self.initialize_bert(num_of_class)
+        model, tokenizer = self.initialize_roberta(num_of_class)
+        frames = [prep_data.train_df, prep_data.val_df]
+        train = pd.concat(frames)
+        train.reset_index(inplace=True)
+        max_length = self.calc_max_len(tokenizer, train, prep_data.test_df)
 
-        encoder_train = self.encode_data(tokenizer, prep_data.train_df, max_length)
+        encoder_train = self.encode_data(tokenizer, train, max_length)
         encoder_eval = self.encode_data(tokenizer, prep_data.val_df, max_length)
         encoder_test = self.encode_data(tokenizer, prep_data.test_df, max_length)
 
-        input_ids_train, attention_masks_train, labels_train = self.extract_inputId_attentionMask(prep_data.train_df, encoder_train)
-        input_ids_eval, attention_masks_eval, labels_eval = self.extract_inputId_attentionMask(prep_data.val_df, encoder_eval)
-        input_ids_test, attention_masks_test, labels_test = self.extract_inputId_attentionMask(prep_data.test_df, encoder_test)
+        input_ids_train, attention_masks_train, labels_train = self.extract_inputId_attentionMask(train, encoder_train)
+        input_ids_eval, attention_masks_eval, labels_eval = self.extract_inputId_attentionMask(prep_data.val_df,
+                                                                                               encoder_eval)
+        input_ids_test, attention_masks_test, labels_test = self.extract_inputId_attentionMask(prep_data.test_df,
+                                                                                               encoder_test)
 
         data_train = self.get_tesnsor_dataset(input_ids_train, attention_masks_train, labels_train)
         data_eval = self.get_tesnsor_dataset(input_ids_eval, attention_masks_eval, labels_eval)
@@ -211,7 +251,6 @@ class offensive:
         dataloader_eval = self.dataloader_object(data_eval, batch_size)
         dataloader_test = self.dataloader_object(data_test, batch_size)
 
-        # freeze_bert_layers(model)
         self.print_model_params(model)
         optimizer, scheduler = self.initialize_optimizer(model, dataloader_train, lr, epochs)
         device = self.load_model_to_device(model)
